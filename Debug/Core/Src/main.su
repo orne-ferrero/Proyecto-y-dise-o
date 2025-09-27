@@ -1,0 +1,12 @@
+../Core/Src/main.c:79:7:calcularErrorPH	16	static
+../Core/Src/main.c:84:7:obtenerSensibilidad	16	static
+../Core/Src/main.c:88:7:calcularVolumen	16	static
+../Core/Src/main.c:93:7:calcularCaudal	16	static
+../Core/Src/main.c:99:7:calcularDutyFinal	24	static
+../Core/Src/main.c:108:6:setBombaPWM	24	static
+../Core/Src/main.c:125:5:main	80	static
+../Core/Src/main.c:231:6:SystemClock_Config	72	static
+../Core/Src/main.c:268:13:MX_I2C1_Init	8	static
+../Core/Src/main.c:302:13:MX_TIM2_Init	48	static
+../Core/Src/main.c:355:13:MX_GPIO_Init	16	static
+../Core/Src/main.c:378:6:Error_Handler	4	static,ignoring_inline_asm
