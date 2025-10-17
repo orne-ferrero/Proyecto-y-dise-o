@@ -43,6 +43,8 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+
 I2C_HandleTypeDef hi2c1;
 
 TIM_HandleTypeDef htim2;
@@ -56,7 +58,9 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_ADC1_Init(void);
 /* USER CODE BEGIN PFP */
+
 
 /* USER CODE END PFP */
 
@@ -69,10 +73,15 @@ static void MX_TIM2_Init(void);
 #define SENSIBILIDAD_SUBIR_PH 3.6363f//ph/ml
 #define VOLUMEN_PILETA 5000.0f// ml
 #define TC 5.0f  //segundos
-#define KP 1.7f
+
+#define KPS 1f  //kp subir
+#define KPB  142f    //kp bajar
 #define DUTY_MIN 0.275f
 #define DUTY_MAX 1.0f
 #define CAUDAL_MAXIMO 1.33f
+#define PH_SLOPE -2.95f//pendiente
+#define PH_OFFSET 14.6f //offset
+#define PH_TOLERANCIA 0.05f
 
 
 //funcion para calcular el error de ph
@@ -90,20 +99,29 @@ float calcularVolumen (float error, float sensibilidad){
 }
 
 //Calculo caudal
-float calcularCaudal(float volumen){
+/*float calcularCaudal(float volumen){
 	return volumen/TC;
 }
-
+*/
 //calculo duty final limitado
 
-float calcularDutyFinal(float caudal){
-	float duty_crudo = caudal / CAUDAL_MAXIMO;
-	float duty_con_ganancia = duty_crudo * KP;
+float calcularDutyFinal(float volumen, float error){
+	float duty_con_ganancia;
+
+	if (error < 0.0f){
+		float duty_con_ganancia = volumen * KPS;
+	};
+
+	if (error > 0.0f){
+			float duty_con_ganancia = volumen * KPB;
+		};
 
 	if (duty_con_ganancia > DUTY_MAX) return DUTY_MAX;
 	if (duty_con_ganancia < DUTY_MIN) return DUTY_MIN;
-	return duty_con_ganancia;
+	else return duty_con_ganancia;
 }
+
+
 
 void setBombaPWM(float duty, int subir) {
     uint32_t pulse = (uint32_t)(duty * htim2.Init.Period);
@@ -116,6 +134,34 @@ void setBombaPWM(float duty, int subir) {
     }
 }
 
+float leerVoltaje(void) {
+	uint32_t adc_raw = 0;
+
+	HAL_ADC_Start(&hadc1);
+	if (HAL_ADC_PollForConversion(&hadc1, 100) == HAL_OK){
+		adc_raw = HAL_ADC_GetValue(&hadc1);
+	}
+	HAL_ADC_Stop(&hadc1);
+
+	float volt = (adc_raw / 4095.0f) * 3.3f;
+	return volt;
+}
+
+float leerPH(void){
+	uint32_t adc_raw = 0;
+
+	HAL_ADC_Start(&hadc1);
+	if (HAL_ADC_PollForConversion(&hadc1, 100) == HAL_OK){
+		adc_raw = HAL_ADC_GetValue(&hadc1);
+	}
+	HAL_ADC_Stop(&hadc1);
+
+	float volt = (adc_raw / 4095.0f )* 3.3f; // convertir voltaje
+	float ph = PH_SLOPE * volt + PH_OFFSET; //formula lineal
+	return ph;
+
+
+}
 /* USER CODE END 0 */
 
 /**
@@ -150,14 +196,19 @@ int main(void)
   MX_GPIO_Init();
   MX_I2C1_Init();
   MX_TIM2_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
-  lcd_init();
+  lcd_init ();
+  lcd_clear();
+  lcd_put_cur(0,0);
+  lcd_send_string("Control pH ON");
+  HAL_Delay(2000);
 
   //arrancar los canales PWM
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1); // Bomba subir pH
-  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2); // Bomba bajar pH
+ HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2); // Bomba bajar pH
 
-  float ph_actual = 0.5f;
+
 
 
   /* USER CODE END 2 */
@@ -166,33 +217,46 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	  float volt = leerVoltaje();
+	  float ph_actual = leerPH();
+	 float error = calcularErrorPH(ph_actual);
 
-	  float error = calcularErrorPH(ph_actual);
+	  //Mostrar el valor actual de ph
+	   lcd_clear();
+	   lcd_put_cur(0,0);
+	   char line1[17];
+	   snprintf(line1, sizeof(line1), "pH: %.2f", ph_actual);
+	   lcd_send_string(line1);
+	   HAL_Delay(1000);
 
-	  if (fabs(error) == 0.0f){
-		  lcd_clear();
-		  lcd_put_cur(0,0);
+	   // Segunda línea: voltaje
+	   	  char line2[17];
+	   	  snprintf(line2, sizeof(line2), "V: %.2f", volt);
+	   	  lcd_put_cur(1,0);
+	   	  lcd_send_string(line2);
+
+	   	  HAL_Delay(1000);
+
+
+
+	  if (fabs(error)< PH_TOLERANCIA){
+		  lcd_put_cur(1,0);
 		  lcd_send_string("pH ideal");
 		  setBombaPWM(0, 1);
 		  HAL_Delay(2000); // espera 2 segundos
-
-		   lcd_clear();
-		   lcd_put_cur(0,0);
-		   lcd_send_string("Bombas off");
-		   HAL_Delay(2000);
 
 	  } else {
 
 	  float sensibilidad = obtenerSensibilidad(error);
 	  float volumen = calcularVolumen(error, sensibilidad);
-	  float caudal = calcularCaudal(volumen);
-	  float duty = calcularDutyFinal(fabs(caudal));
+	  float duty = calcularDutyFinal(volumen, error);
 
-	    lcd_clear();
-	    lcd_put_cur(0,0);
+
+	    lcd_put_cur(1,0);
 	    char ph_line[17];
 	    if(error < 0.0f){
 	    snprintf(ph_line, sizeof(ph_line), "Bajar: %.2f pH", fabs(error));
@@ -202,7 +266,7 @@ int main(void)
 	     setBombaPWM(duty,1);
 	  }
 
-	    lcd_send_string(ph_line);       // ✅ mostrar el texto
+	    lcd_send_string(ph_line);       //  mostrar el texto
 	    HAL_Delay(2000);
 
 	    HAL_Delay(2000);
@@ -217,12 +281,13 @@ int main(void)
 
 	  }
 
+
   }
-}
+
 
 
   /* USER CODE END 3 */
-
+}
 
 /**
   * @brief System Clock Configuration
@@ -232,6 +297,7 @@ void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
@@ -258,6 +324,59 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_ADC;
+  PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV2;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Common config
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 1;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_3;
+  sConfig.Rank = ADC_REGULAR_RANK_1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
 }
 
 /**
@@ -313,9 +432,9 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 0;
+  htim2.Init.Prescaler = 7;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 399;
+  htim2.Init.Period = 999;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
