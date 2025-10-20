@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <math.h>
 #include "i2c_lcd.h"
+#include <stdlib.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -68,63 +69,52 @@ static void MX_ADC1_Init(void);
 /* USER CODE BEGIN 0 */
 
 
-#define PH_IDEAL 7.4f//valor ideal de ph
-#define SENSIBILIDAD_BAJAR_PH 1.0f //ph/ml
-#define SENSIBILIDAD_SUBIR_PH 3.6363f//ph/ml
-#define VOLUMEN_PILETA 5000.0f// ml
-#define TC 5.0f  //segundos
-
-#define KPS 1f  //kp subir
-#define KPB  142f    //kp bajar
-#define DUTY_MIN 0.275f
-#define DUTY_MAX 1.0f
-#define CAUDAL_MAXIMO 1.33f
-#define PH_SLOPE -2.95f//pendiente
-#define PH_OFFSET 14.6f //offset
-#define PH_TOLERANCIA 0.05f
+#define PH_IDEAL 740   //valor ideal de ph
+#define SENSIBILIDAD_BAJAR_PH 100 //ph/ml
+#define SENSIBILIDAD_SUBIR_PH 363//ph/ml
+#define VOLUMEN_PILETA 500000// ml
+#define TC 500  //segundos
+#define KP 170
+#define DUTY_MIN 28
+#define DUTY_MAX 100
+#define CAUDAL_MAXIMO 133
+#define PH_SLOPE -295//pendiente
+#define PH_OFFSET 1460 //offset
+#define PH_TOLERANCIA 5
 
 
 //funcion para calcular el error de ph
-float calcularErrorPH(float ph_actual){
+int calcularErrorPH(int ph_actual){
 	return PH_IDEAL - ph_actual;
 }
 
 //determino sensibilidad segun error
-float obtenerSensibilidad(float error){
-	return (error < 0.0f) ? SENSIBILIDAD_BAJAR_PH : SENSIBILIDAD_SUBIR_PH;
+int obtenerSensibilidad(int error){
+	return (error < 0) ? SENSIBILIDAD_BAJAR_PH : SENSIBILIDAD_SUBIR_PH;
 }
  //calculo volumen
-float calcularVolumen (float error, float sensibilidad){
-	return error/sensibilidad;
+int calcularVolumen (int error, int sensibilidad){
+	return (abs(error)*100)/sensibilidad;
 }
 
 //Calculo caudal
-/*float calcularCaudal(float volumen){
+int calcularCaudal(int volumen){
 	return volumen/TC;
 }
-*/
+
 //calculo duty final limitado
 
-float calcularDutyFinal(float volumen, float error){
-	float duty_con_ganancia;
+int calcularDutyFinal(int caudal){
+	int duty_crudo = (caudal * KP) / CAUDAL_MAXIMO;
 
-	if (error < 0.0f){
-		float duty_con_ganancia = volumen * KPS;
-	};
 
-	if (error > 0.0f){
-			float duty_con_ganancia = volumen * KPB;
-		};
-
-	if (duty_con_ganancia > DUTY_MAX) return DUTY_MAX;
-	if (duty_con_ganancia < DUTY_MIN) return DUTY_MIN;
-	else return duty_con_ganancia;
+	if (duty_crudo > DUTY_MAX*100) return DUTY_MAX*100;
+	if (duty_crudo < DUTY_MIN*100) return DUTY_MIN*100;
+	else return duty_crudo;
 }
 
-
-
-void setBombaPWM(float duty, int subir) {
-    uint32_t pulse = (uint32_t)(duty * htim2.Init.Period);
+void setBombaPWM(int duty, int subir) {
+    uint32_t pulse = (uint32_t)((duty/100) * htim2.Init.Period);
     if (subir) {
         __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, pulse);  // Bomba subir pH
         __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 0);      // Apaga bomba bajar
@@ -134,7 +124,7 @@ void setBombaPWM(float duty, int subir) {
     }
 }
 
-float leerVoltaje(void) {
+int leerVoltaje(void) {
 	uint32_t adc_raw = 0;
 
 	HAL_ADC_Start(&hadc1);
@@ -142,12 +132,11 @@ float leerVoltaje(void) {
 		adc_raw = HAL_ADC_GetValue(&hadc1);
 	}
 	HAL_ADC_Stop(&hadc1);
-
-	float volt = (adc_raw / 4095.0f) * 3.3f;
+	int volt = (adc_raw *330)/4095;
 	return volt;
 }
 
-float leerPH(void){
+int leerPH(void){
 	uint32_t adc_raw = 0;
 
 	HAL_ADC_Start(&hadc1);
@@ -156,8 +145,8 @@ float leerPH(void){
 	}
 	HAL_ADC_Stop(&hadc1);
 
-	float volt = (adc_raw / 4095.0f )* 3.3f; // convertir voltaje
-	float ph = PH_SLOPE * volt + PH_OFFSET; //formula lineal
+	int volt = (adc_raw * 330 ) / 4095; // convertir voltaje
+	int ph = (PH_SLOPE * volt)/100 + PH_OFFSET; //formula lineal
 	return ph;
 
 
@@ -201,7 +190,7 @@ int main(void)
   lcd_init ();
   lcd_clear();
   lcd_put_cur(0,0);
-  lcd_send_string("Control pH ON");
+  lcd_send_string("Control PH ON");
   HAL_Delay(2000);
 
   //arrancar los canales PWM
@@ -221,21 +210,26 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  float volt = leerVoltaje();
-	  float ph_actual = leerPH();
-	 float error = calcularErrorPH(ph_actual);
+	  int  ph_actual = leerPH();
+	  int volt = leerVoltaje();
+	 int error = calcularErrorPH(ph_actual);
+	 int decimal = ph_actual % 100;
+	 int entero = ph_actual / 100;
 
 	  //Mostrar el valor actual de ph
 	   lcd_clear();
 	   lcd_put_cur(0,0);
 	   char line1[17];
-	   snprintf(line1, sizeof(line1), "pH: %.2f", ph_actual);
+	   snprintf(line1, sizeof(line1), "pH: %02d.%02d", entero, decimal);
 	   lcd_send_string(line1);
 	   HAL_Delay(1000);
 
 	   // Segunda línea: voltaje
+
+	   	 int decimal1 = volt % 100;
+	  	 int entero1 = volt / 100;
 	   	  char line2[17];
-	   	  snprintf(line2, sizeof(line2), "V: %.2f", volt);
+	   	  snprintf(line2, sizeof(line2), "V: %02d.%02d", entero1, decimal1);
 	   	  lcd_put_cur(1,0);
 	   	  lcd_send_string(line2);
 
@@ -243,7 +237,7 @@ int main(void)
 
 
 
-	  if (fabs(error)< PH_TOLERANCIA){
+	  if (abs(error)< PH_TOLERANCIA){
 		  lcd_put_cur(1,0);
 		  lcd_send_string("pH ideal");
 		  setBombaPWM(0, 1);
@@ -251,18 +245,21 @@ int main(void)
 
 	  } else {
 
-	  float sensibilidad = obtenerSensibilidad(error);
-	  float volumen = calcularVolumen(error, sensibilidad);
-	  float duty = calcularDutyFinal(volumen, error);
+	  int sensibilidad = obtenerSensibilidad(error);
+	  int volumen = calcularVolumen(error, sensibilidad);
+	  int caudal = calcularCaudal(volumen);
+	  int duty = calcularDutyFinal(abs(caudal));
 
 
+	  int decimal2 = abs (error) % 100;
+	  int entero2 = abs (error) / 100;
 	    lcd_put_cur(1,0);
 	    char ph_line[17];
 	    if(error < 0.0f){
-	    snprintf(ph_line, sizeof(ph_line), "Bajar: %.2f pH", fabs(error));
+	    snprintf(ph_line, sizeof(ph_line), "Bajar:  %02d.%02d pH", entero2, decimal2);
 	    setBombaPWM(duty, 0);
 	  } else{
-	     snprintf(ph_line, sizeof(ph_line), "Subir: %.2f pH", fabs(error));
+	     snprintf(ph_line, sizeof(ph_line), "Subir:  %02d.%02d pH",entero2, decimal2);
 	     setBombaPWM(duty,1);
 	  }
 
@@ -275,15 +272,16 @@ int main(void)
 	     lcd_clear();
 	     lcd_put_cur(0,0);
 	     char duty_line[17];
-	     snprintf(duty_line, sizeof(duty_line), "Duty: %.2f", duty);
+	     int decimal3 = duty % 100;
+	     int entero3 = duty / 100;
+
+	     snprintf(duty_line, sizeof(duty_line), "Duty:  %02d.%02d", entero3, decimal3);
 	     lcd_send_string(duty_line);
 	      HAL_Delay(2000);
 
 	  }
 
-
   }
-
 
 
   /* USER CODE END 3 */
